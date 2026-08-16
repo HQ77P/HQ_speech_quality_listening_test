@@ -350,11 +350,25 @@ async function playRealAudio(url, onEnd){
 }
 
 function playStimulus(audioUrl, demo, onEnd){
-  if(audioUrl){
+  if(!audioUrl){ playDemoTone(demo || {}, onEnd); return; }
+
+  // Primary path: native <audio> element. It matches exactly what you get
+  // when opening the file URL directly in a browser tab (same decoder,
+  // same duration handling), which is the most reliable/predictable path
+  // for files that are already in a standard sample rate.
+  const audio = new Audio(audioUrl);
+  let usedFallback = false;
+
+  const fallbackToWebAudio = (reason) => {
+    if(usedFallback) return;
+    usedFallback = true;
+    console.warn(`Native <audio> playback failed for ${audioUrl} (${reason}). Falling back to Web Audio decode (handles e.g. very low sample rate files).`);
     playRealAudio(audioUrl, onEnd);
-  } else {
-    playDemoTone(demo || {}, onEnd);
-  }
+  };
+
+  audio.onended = () => { if(!usedFallback) onEnd && onEnd(); };
+  audio.onerror = () => fallbackToWebAudio("onerror");
+  audio.play().catch(err => fallbackToWebAudio(err.message || String(err)));
 }
 
 // ---- storage helpers (auto: Claude artifact storage, or GAS backend for self-hosted deployments) ----
