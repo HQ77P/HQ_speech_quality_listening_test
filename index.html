@@ -189,7 +189,6 @@ const METHODS = [
 // filename stems here - each must exist in every method folder above.
 const UTTERANCE_IDS = ["p234_005_mic1","p234_057_mic1","p234_109_mic1","p234_216_mic1","p262_016_mic1","p262_128_mic1","p262_304_mic1","p262_381_mic1","p376_079_mic1","p376_146_mic1","p376_291_mic1"];
 
-
 // Toggle which blocks to include. Turning both on roughly doubles session
 // length - see the estimated duration shown on the intro screen.
 const INCLUDE_ACR_BLOCK = true;   // Block 1: absolute quality rating per condition
@@ -315,20 +314,44 @@ function playDemoTone({noise=0.3, freq=440}, onEnd){
   if(noiseSrc){ noiseSrc.start(now); noiseSrc.stop(now+dur); }
   osc.onended = () => onEnd && onEnd();
 }
+// cache decoded buffers so replaying the same clip doesn't re-fetch/re-decode
+const audioBufferCache = new Map();
+
+async function decodeAudioFile(url){
+  if(audioBufferCache.has(url)) return audioBufferCache.get(url);
+  const ctx = ensureCtx();
+  const resp = await fetch(url);
+  if(!resp.ok) throw new Error(`HTTP ${resp.status} fetching ${url}`);
+  const arrayBuf = await resp.arrayBuffer();
+  // decodeAudioData parses raw PCM directly - unlike the <audio> element's
+  // media pipeline, it has no lower bound on sample rate, so very low
+  // sample rate files (e.g. 2000 Hz, used as an experimental condition)
+  // decode and play correctly instead of being rejected as "unsupported".
+  const audioBuf = await ctx.decodeAudioData(arrayBuf);
+  audioBufferCache.set(url, audioBuf);
+  return audioBuf;
+}
+
+async function playRealAudio(url, onEnd){
+  try{
+    const ctx = ensureCtx();
+    if(ctx.state === "suspended") await ctx.resume(); // autoplay policies need a resume after a user gesture
+    const buf = await decodeAudioFile(url);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    src.onended = () => onEnd && onEnd();
+    src.start();
+  }catch(err){
+    console.error("Audio failed to load/decode:", url, err);
+    alert(`Could not play this audio file:\n${url}\n\n${err.message}\n\nCheck the browser console (F12) for details, or verify the file loads directly at that URL.\nNote: if this file is hosted on a different origin than this page, it also needs CORS enabled for fetch() to read it.`);
+    onEnd && onEnd(); // release the UI (don't leave Play permanently disabled)
+  }
+}
+
 function playStimulus(audioUrl, demo, onEnd){
   if(audioUrl){
-    const audio = new Audio(audioUrl);
-    audio.onended = () => onEnd && onEnd();
-    audio.onerror = () => {
-      console.error("Audio failed to load:", audioUrl,
-        "- check the URL resolves in a new tab, returns real audio bytes (not a 404 page or a Git LFS pointer), and has a browser-supported codec.");
-      alert(`Could not play this audio file:\n${audioUrl}\n\nCheck the browser console (F12) for details, or verify the file loads directly at that URL.`);
-      onEnd && onEnd(); // release the UI (don't leave Play permanently disabled)
-    };
-    audio.play().catch(err => {
-      console.error("play() rejected for", audioUrl, err);
-      audio.onerror && audio.onerror();
-    });
+    playRealAudio(audioUrl, onEnd);
   } else {
     playDemoTone(demo || {}, onEnd);
   }
