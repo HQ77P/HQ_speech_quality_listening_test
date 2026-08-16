@@ -189,6 +189,7 @@ const METHODS = [
 // filename stems here - each must exist in every method folder above.
 const UTTERANCE_IDS = ["p234_005_mic1","p234_057_mic1","p234_109_mic1","p234_216_mic1","p262_016_mic1","p262_128_mic1","p262_304_mic1","p262_381_mic1","p376_079_mic1","p376_146_mic1","p376_291_mic1"];
 
+
 // Toggle which blocks to include. Turning both on roughly doubles session
 // length - see the estimated duration shown on the intro screen.
 const INCLUDE_ACR_BLOCK = true;   // Block 1: absolute quality rating per condition
@@ -318,7 +319,16 @@ function playStimulus(audioUrl, demo, onEnd){
   if(audioUrl){
     const audio = new Audio(audioUrl);
     audio.onended = () => onEnd && onEnd();
-    audio.play();
+    audio.onerror = () => {
+      console.error("Audio failed to load:", audioUrl,
+        "- check the URL resolves in a new tab, returns real audio bytes (not a 404 page or a Git LFS pointer), and has a browser-supported codec.");
+      alert(`Could not play this audio file:\n${audioUrl}\n\nCheck the browser console (F12) for details, or verify the file loads directly at that URL.`);
+      onEnd && onEnd(); // release the UI (don't leave Play permanently disabled)
+    };
+    audio.play().catch(err => {
+      console.error("play() rejected for", audioUrl, err);
+      audio.onerror && audio.onerror();
+    });
   } else {
     playDemoTone(demo || {}, onEnd);
   }
