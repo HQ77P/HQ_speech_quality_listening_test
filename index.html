@@ -162,7 +162,7 @@
 
    TEST_ID: give each separate study run a unique name so results don't mix.
    ========================================================================= */
-const TEST_ID = "listest_2026_demo_v3";
+const TEST_ID = "listest_2026_demo";
 
 // Leave AUDIO_BASE pointing at any public HTTPS static host, OR - the
 // simplest option for GitHub Pages - put the audio files inside this same
@@ -179,15 +179,15 @@ const GAS_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbyRGMK3LJuzGs5Ux
 
 const METHODS = [
   { key:"ground_truth", label:"Ground-Truth", folder:"ground_truth", isReference:true },
-  { key:"method_a",     label:"Method A",      folder:"method_a" },
-  { key:"method_b",     label:"Method B",      folder:"method_b" },
-  { key:"method_c",     label:"Method C",      folder:"method_c" },
+  { key:"EV2A",     label:"ev2a",      folder:"EV2A" },
+  { key:"VM",     label:"vm",      folder:"VM" },
+  { key:"EBVM",     label:"ebvm",      folder:"EBVM" },
 ];
 
 // 8-12 matched utterances is a good default for a 10-20 listener study
 // (see the recommendation notes in the chat reply). List the shared
 // filename stems here - each must exist in every method folder above.
-const UTTERANCE_IDS = ["utt01","utt02","utt03","utt04","utt05","utt06","utt07","utt08"];
+const UTTERANCE_IDS = ["p234_005_mic1","p234_057_mic1","p234_109_mic1","p234_216_mic1","p262_016_mic1","p262_128_mic1","p262_304_mic1","p262_381_mic1","p376_079_mic1","p376_146_mic1","p379_291_mic1"];
 
 // Toggle which blocks to include. Turning both on roughly doubles session
 // length - see the estimated duration shown on the intro screen.
