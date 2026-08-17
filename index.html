@@ -191,13 +191,14 @@ const UTTERANCE_IDS = ["p234_005_mic1","p234_057_mic1","p234_109_mic1","p234_216
 
 // Toggle which blocks to include. Turning both on roughly doubles session
 // length - see the estimated duration shown on the intro screen.
-const INCLUDE_ACR_BLOCK = true;   // Block 1: absolute quality rating per condition
-const INCLUDE_CCR_BLOCK = true;   // Block 2: each method vs Ground-Truth, paired
+const INCLUDE_ACR_BLOCK = true;   // Test 1: absolute quality rating per condition (ground-truth excluded)
+const INCLUDE_CCR_BLOCK = true;   // Test 2: each method vs Ground-Truth, paired
 const USE_DEMO_AUDIO = false;      // set to false once your real audioUrl files are in place
 
 const INSTRUCTIONS_INTRO = `
-You will complete two short blocks. In Block 1 you will rate the overall
-quality of single audio clips. In Block 2 you will compare pairs of clips
+You will complete two short, separate tests. Test 1 asks you to rate the
+overall quality of single audio clips. Test 2 asks you to compare pairs of
+clips. Test 1 must be finished in full before Test 2 begins.
 and judge how the second one sounds relative to the first. Please use
 headphones in a quiet environment.
 `;
@@ -216,16 +217,21 @@ function buildTrials(){
   const trials = [];
 
   if(INCLUDE_ACR_BLOCK){
-    METHODS.forEach(m=>{
+    // Ground-truth/reference is intentionally excluded from ACR - common
+    // practice when the reference isn't itself a "system under test" (see
+    // e.g. Fu et al. 2020, DNS Challenge MOS tables), and it avoids an
+    // easy-to-spot ceiling-score item cueing listeners that a hidden
+    // reference is present.
+    METHODS.filter(m=>!m.isReference).forEach(m=>{
       UTTERANCE_IDS.forEach((u,i)=>{
         trials.push({
-          id:`acr_${m.key}_${u}`, type:"acr", condition:m.label,
+          id:`acr_${m.key}_${u}`, type:"acr", condition:m.label, testNumber:1,
           audioUrl: USE_DEMO_AUDIO ? "" : audioUrl(m.folder,u),
-          demo:{ noise: m.isReference ? 0 : 0.15 + 0.2*(METHODS.indexOf(m)%3), freq: 330+i*22 }
+          demo:{ noise: 0.15 + 0.2*(METHODS.indexOf(m)%3), freq: 330+i*22 }
         });
       });
     });
-    trials.push({ id:"acr_attn", type:"acr", condition:"__attention__", attention:true,
+    trials.push({ id:"acr_attn", type:"acr", condition:"__attention__", attention:true, testNumber:1,
       attentionText:"Attention check: please select 'Excellent (5)' regardless of what you hear.",
       audioUrl:"", demo:{noise:0.3, freq:392} });
   }
@@ -236,7 +242,7 @@ function buildTrials(){
       UTTERANCE_IDS.forEach((u,i)=>{
         const demoBase = 330+i*22;
         trials.push({
-          id:`ccr_${m.key}_${u}`, type:"ccr", refCondition:ref.label, testCondition:m.label,
+          id:`ccr_${m.key}_${u}`, type:"ccr", refCondition:ref.label, testCondition:m.label, testNumber:2,
           refAudioUrl: USE_DEMO_AUDIO ? "" : audioUrl(ref.folder,u),
           testAudioUrl: USE_DEMO_AUDIO ? "" : audioUrl(m.folder,u),
           demoRef:{noise:0, freq:demoBase},
@@ -244,7 +250,7 @@ function buildTrials(){
         });
       });
     });
-    trials.push({ id:"ccr_attn", type:"ccr", refCondition:"__attention__", testCondition:"__attention__", attention:true,
+    trials.push({ id:"ccr_attn", type:"ccr", refCondition:"__attention__", testCondition:"__attention__", attention:true, testNumber:2,
       attentionText:"Attention check: please select 'About the same (0)' regardless of what you hear.",
       refAudioUrl:"", testAudioUrl:"", demoRef:{noise:0.2, freq:392}, demoTest:{noise:0.2, freq:392} });
   }
@@ -252,7 +258,13 @@ function buildTrials(){
   return trials;
 }
 
-const TRIALS = buildTrials();
+// Build the two tests SEPARATELY - each is shuffled within itself so items
+// from Test 1 and Test 2 never interleave. Test 1 (ACR) always runs to
+// completion before Test 2 (CCR) begins.
+const ALL_TRIALS = buildTrials();
+const TEST1_TRIALS = ALL_TRIALS.filter(t => t.testNumber === 1);
+const TEST2_TRIALS = ALL_TRIALS.filter(t => t.testNumber === 2);
+const TRIALS = ALL_TRIALS; // kept for the EST_MINUTES calculation below
 const EST_MINUTES = Math.max(1, Math.round(TRIALS.length * 20 / 60));
 
 const ACR_LABELS = [
@@ -417,6 +429,29 @@ async function loadAllResponses(){
   return [];
 }
 
+// Permanently deletes all stored responses for the current TEST_ID only -
+// other TEST_ID's data (past rounds) is left untouched either way.
+async function clearAllResponses(){
+  if(hasClaudeStorage()){
+    const listRes = await window.storage.list(`resp:${TEST_ID}:`, true);
+    const keys = (listRes && listRes.keys) || [];
+    for(const k of keys){
+      try{ await window.storage.delete(k, true); }
+      catch(e){ console.error("delete failed for", k, e); }
+    }
+    return;
+  }
+  if(GAS_WEBAPP_URL){
+    try{
+      await fetch(GAS_WEBAPP_URL, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({ action:"clear", testId: TEST_ID })
+      });
+    }catch(e){ console.error("clear failed", e); }
+  }
+}
+
 // ============================ PARTICIPANT FLOW ============================
 let state = {
   screen: "intro",
@@ -432,7 +467,25 @@ function render(){
   if(isAdmin){ renderAdmin(); return; }
   if(state.screen === "intro") return renderIntro();
   if(state.screen === "trial") return renderTrial();
+  if(state.screen === "interstitial") return renderInterstitial();
   if(state.screen === "done") return renderDone();
+}
+
+function renderInterstitial(){
+  app.innerHTML = `
+  <div class="card">
+    <div class="eyebrow">Test 1 complete</div>
+    <h1>Moving on to Test 2</h1>
+    <p>In this next test you'll hear two clips per item, A and B, and judge how B compares to A.
+       Test 1 is now finished and cannot be revisited.</p>
+    <div class="row end">
+      <button class="btn btn-primary" id="continueBtn">Continue to Test 2 →</button>
+    </div>
+  </div>`;
+  document.getElementById("continueBtn").onclick = () => {
+    state.screen = "trial";
+    render();
+  };
 }
 
 function renderIntro(){
@@ -444,8 +497,8 @@ function renderIntro(){
     <ul class="checklist">
       <li><span class="tick">✓</span> Wear headphones, in a quiet room</li>
       <li><span class="tick">✓</span> Each clip can be replayed as many times as you like</li>
-      <li><span class="tick">✓</span> Block 1: rate overall quality, 1 = bad, 5 = excellent</li>
-      <li><span class="tick">✓</span> Block 2: rate the second clip relative to the first, -3 to +3</li>
+      <li><span class="tick">✓</span> Test 1: rate overall quality, 1 = bad, 5 = excellent</li>
+      <li><span class="tick">✓</span> Test 2: rate the second clip relative to the first, -3 to +3</li>
       <li><span class="tick">✓</span> Please don't switch to other tabs or apps during the test</li>
     </ul>
     <div class="rule"></div>
@@ -467,7 +520,8 @@ function renderIntro(){
   startBtn.onclick = () => {
     const val = document.getElementById("pid").value.trim();
     state.participantId = val || state.participantId;
-    state.order = shuffle(TRIALS);
+    state.order = [...shuffle(TEST1_TRIALS), ...shuffle(TEST2_TRIALS)];
+    state.test1Count = TEST1_TRIALS.length;
     state.screen = "trial";
     state.idx = 0;
     render();
@@ -486,13 +540,20 @@ function renderTrial(){
     trial._firstIsRef = Math.random() < 0.5;
   }
 
+  // progress is relative to the CURRENT test (1 or 2), not the global list
+  const test1Count = state.test1Count;
+  const inTest2 = state.idx >= test1Count;
+  const testLabel = inTest2 ? "Test 2" : "Test 1";
+  const localIdx = inTest2 ? (state.idx - test1Count) : state.idx;
+  const localTotal = inTest2 ? (total - test1Count) : test1Count;
+
   app.innerHTML = `
   <div class="progress-wrap">
-    <div class="progress-track"><div class="progress-fill" style="width:${(state.idx/total*100).toFixed(1)}%"></div></div>
-    <div class="progress-label"><span>ITEM ${state.idx+1} / ${total}</span><span>${state.participantId}</span></div>
+    <div class="progress-track"><div class="progress-fill" style="width:${(localIdx/localTotal*100).toFixed(1)}%"></div></div>
+    <div class="progress-label"><span>${testLabel.toUpperCase()} · ITEM ${localIdx+1} / ${localTotal}</span><span>${state.participantId}</span></div>
   </div>
   <div class="card">
-    <div class="type-badge">${isCCR ? "Block 2 · Comparison" : "Block 1 · Quality"}</div>
+    <div class="type-badge">${isCCR ? "Test 2 · Comparison" : "Test 1 · Quality"}</div>
     ${trial.attention ? `<div class="attn-flag">⚠ ${trial.attentionText}</div>` : ""}
     <div class="stage">
       ${isCCR ? `
@@ -629,7 +690,10 @@ function renderTrial(){
     }
 
     if(state.idx < total-1){
-      state.idx++;
+      const nextIdx = state.idx + 1;
+      const crossingIntoTest2 = state.test1Count > 0 && nextIdx === state.test1Count;
+      state.idx = nextIdx;
+      state.screen = crossingIntoTest2 ? "interstitial" : "trial";
       render();
     } else {
       state.screen = "done";
@@ -686,9 +750,22 @@ async function renderAdmin(){
     <div class="row end">
       <button class="btn btn-ghost" id="exportBtn">⭳ Export CSV</button>
       <button class="btn btn-ghost" id="refreshBtn">↻ Refresh</button>
+      <button class="btn btn-ghost" id="clearBtn" style="border-color:var(--warn);color:var(--warn);">⚠ Clear Results</button>
     </div>
   </div>`;
   document.getElementById("refreshBtn").onclick = renderAdmin;
+  document.getElementById("clearBtn").onclick = async () => {
+    const currentAll = window._lastResponses || [];
+    const sure = confirm(
+      `This will permanently delete all ${currentAll.length} stored responses for TEST_ID "${TEST_ID}". ` +
+      `This cannot be undone. Type OK to confirm.`
+    );
+    if(!sure) return;
+    document.getElementById("clearBtn").disabled = true;
+    document.getElementById("clearBtn").textContent = "Clearing...";
+    await clearAllResponses();
+    renderAdmin();
+  };
 
   const all = await loadAllResponses();
   window._lastResponses = all;
@@ -752,13 +829,13 @@ async function renderAdmin(){
       <span class="pill">Total responses = ${all.length}</span>
     </div>
 
-    <h2 class="section">Block 1 · ACR (Mean Opinion Score)</h2>
+    <h2 class="section">Test 1 · ACR (Mean Opinion Score)</h2>
     <table class="admin-table">
       <thead><tr><th>Condition</th><th>N</th><th>Mean MOS</th><th>95% CI</th><th>SD</th><th></th></tr></thead>
       <tbody>${acrRows || `<tr><td colspan="6">No ACR data yet.</td></tr>`}</tbody>
     </table>
 
-    <h2 class="section">Block 2 · CCR (Comparison MOS, test vs reference)</h2>
+    <h2 class="section">Test 2 · CCR (Comparison MOS, test vs reference)</h2>
     <table class="admin-table">
       <thead><tr><th>Comparison</th><th>N</th><th>Mean CMOS</th><th>95% CI</th><th>SD</th><th>-3 ← 0 → +3</th></tr></thead>
       <tbody>${ccrRows || `<tr><td colspan="6">No CCR data yet.</td></tr>`}</tbody>
