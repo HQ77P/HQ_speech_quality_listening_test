@@ -162,7 +162,7 @@
 
    TEST_ID: give each separate study run a unique name so results don't mix.
    ========================================================================= */
-const TEST_ID = "listest_2026_demo";
+const TEST_ID = "listest_2026_demo_0818";
 
 // Leave AUDIO_BASE pointing at any public HTTPS static host, OR - the
 // simplest option for GitHub Pages - put the audio files inside this same
@@ -273,6 +273,16 @@ const ACR_LABELS = [
 const CCR_LABELS = [
   {v:-3,label:"Much worse"}, {v:-2,label:"Worse"}, {v:-1,label:"Slightly worse"},
   {v:0,label:"About the same"}, {v:1,label:"Slightly better"}, {v:2,label:"Better"}, {v:3,label:"Much better"}
+];
+
+// Practice round shown before Test 1 - always uses a synthesized demo tone
+// (regardless of USE_DEMO_AUDIO) so it works even before real audio is
+// wired up, and its answers are never saved anywhere.
+const PRACTICE_TRIALS = [
+  { id:"practice_acr", type:"acr", condition:"__practice__",
+    audioUrl:"", demo:{noise:0.25, freq:466} },
+  { id:"practice_ccr", type:"ccr", refCondition:"__practice__", testCondition:"__practice__",
+    refAudioUrl:"", testAudioUrl:"", demoRef:{noise:0.05, freq:466}, demoTest:{noise:0.3, freq:466} },
 ];
 
 /* ========================================================================= */
@@ -460,12 +470,15 @@ let state = {
   order: [],
   idx: 0,
   answers: {},
-  attentionFail: false
+  attentionFail: false,
+  practiceIdx: 0,
+  practiceAnswers: {}
 };
 
 function render(){
   if(isAdmin){ renderAdmin(); return; }
   if(state.screen === "intro") return renderIntro();
+  if(state.screen === "practice") return renderPractice();
   if(state.screen === "trial") return renderTrial();
   if(state.screen === "interstitial") return renderInterstitial();
   if(state.screen === "done") return renderDone();
@@ -497,6 +510,7 @@ function renderIntro(){
     <ul class="checklist">
       <li><span class="tick">✓</span> Wear headphones, in a quiet room</li>
       <li><span class="tick">✓</span> Each clip can be replayed as many times as you like</li>
+      <li><span class="tick">✓</span> A short practice round comes first to help you get comfortable - it is not scored</li>
       <li><span class="tick">✓</span> Test 1: rate overall quality, 1 = bad, 5 = excellent</li>
       <li><span class="tick">✓</span> Test 2: rate the second clip relative to the first, -3 to +3</li>
       <li><span class="tick">✓</span> Please don't switch to other tabs or apps during the test</li>
@@ -520,11 +534,140 @@ function renderIntro(){
   startBtn.onclick = () => {
     const val = document.getElementById("pid").value.trim();
     state.participantId = val || state.participantId;
-    state.order = [...shuffle(TEST1_TRIALS), ...shuffle(TEST2_TRIALS)];
-    state.test1Count = TEST1_TRIALS.length;
-    state.screen = "trial";
-    state.idx = 0;
+    state.screen = "practice";
+    state.practiceIdx = 0;
     render();
+  };
+}
+
+function renderPractice(){
+  const trial = PRACTICE_TRIALS[state.practiceIdx];
+  const total = PRACTICE_TRIALS.length;
+  const selected = state.practiceAnswers[trial.id];
+  const isCCR = trial.type === "ccr";
+  const labels = isCCR ? CCR_LABELS : ACR_LABELS;
+  const isLast = state.practiceIdx === total - 1;
+
+  if(isCCR && trial._firstIsRef === undefined){
+    trial._firstIsRef = Math.random() < 0.5;
+  }
+
+  app.innerHTML = `
+  <div class="progress-wrap">
+    <div class="progress-track"><div class="progress-fill" style="width:${(state.practiceIdx/total*100).toFixed(1)}%;background:var(--warn);"></div></div>
+    <div class="progress-label"><span>PRACTICE · ITEM ${state.practiceIdx+1} / ${total}</span><span>${state.participantId}</span></div>
+  </div>
+  <div class="card">
+    <div class="type-badge" style="border-color:var(--warn);color:var(--warn);">Practice · Not scored</div>
+    <div class="attn-flag">This round is just to help you get comfortable with the controls. Nothing here is recorded or counted in the results.</div>
+    <div class="stage">
+      ${isCCR ? `
+        <div class="pair-row">
+          <button class="btn-file" id="playA">▶ Play A</button>
+          <button class="btn-file" id="playB">▶ Play B</button>
+        </div>
+        <div class="play-count" id="playCount">Play both clips at least once before rating</div>
+      ` : `
+        <button class="play-btn" id="playBtn">▶</button>
+        <svg class="scope-line" id="scopeLine" viewBox="0 0 180 36" xmlns="http://www.w3.org/2000/svg">
+          <path d="M0,18 L180,18" />
+        </svg>
+        <div class="play-count" id="playCount">Not played yet · tap the circle to play</div>
+      `}
+    </div>
+    <div class="scale-title">${isCCR ? "How does clip B compare to clip A?" : "Overall quality"}</div>
+    <div class="scale ${isCCR ? 'ccr' : 'acr'}" id="scale">
+      ${labels.map(r => `
+        <div class="opt ${selected===r.v?'selected':''}" data-val="${r.v}">
+          <div class="num">${r.v > 0 ? '+'+r.v : r.v}</div><div class="lbl">${r.label}</div>
+        </div>`).join("")}
+    </div>
+    <div class="row end">
+      <button class="btn btn-primary" id="nextBtn" disabled>
+        ${isLast ? "Start Test 1 →" : "Next practice item →"}
+      </button>
+    </div>
+  </div>
+  <div class="footer-note">Practice round - your answers here are not saved</div>
+  `;
+
+  let playedA = false, playedB = false, playedOnce = !!selected;
+
+  function updateNextEnabled(){
+    const btn = document.getElementById("nextBtn");
+    if(isCCR){
+      btn.disabled = !(playedA && playedB && state.practiceAnswers[trial.id]!=null);
+    } else {
+      btn.disabled = !(playedOnce && state.practiceAnswers[trial.id]!=null);
+    }
+  }
+
+  if(isCCR){
+    const firstUrl  = trial._firstIsRef ? trial.refAudioUrl  : trial.testAudioUrl;
+    const firstDemo = trial._firstIsRef ? trial.demoRef      : trial.demoTest;
+    const secondUrl  = trial._firstIsRef ? trial.testAudioUrl : trial.refAudioUrl;
+    const secondDemo = trial._firstIsRef ? trial.demoTest     : trial.demoRef;
+
+    const btnA = document.getElementById("playA");
+    const btnB = document.getElementById("playB");
+    const playCountEl = document.getElementById("playCount");
+
+    btnA.onclick = () => {
+      btnA.disabled = true;
+      playStimulus(firstUrl, firstDemo, () => {
+        btnA.disabled = false; btnA.classList.add("played"); playedA = true;
+        playCountEl.textContent = "You can replay either clip as many times as you like";
+        updateNextEnabled();
+      });
+    };
+    btnB.onclick = () => {
+      btnB.disabled = true;
+      playStimulus(secondUrl, secondDemo, () => {
+        btnB.disabled = false; btnB.classList.add("played"); playedB = true;
+        playCountEl.textContent = "You can replay either clip as many times as you like";
+        updateNextEnabled();
+      });
+    };
+  } else {
+    const playBtn = document.getElementById("playBtn");
+    const scopeLine = document.getElementById("scopeLine").querySelector("path");
+    const playCountEl = document.getElementById("playCount");
+    let localPlays = 0;
+    playBtn.onclick = () => {
+      playBtn.disabled = true;
+      animateScope(scopeLine, true);
+      playStimulus(trial.audioUrl, trial.demo, () => {
+        playBtn.disabled = false;
+        animateScope(scopeLine, false);
+        localPlays++;
+        playedOnce = true;
+        playCountEl.textContent = `Played ${localPlays} time(s) · you can replay it`;
+        updateNextEnabled();
+      });
+    };
+  }
+
+  document.querySelectorAll(".opt").forEach(el=>{
+    el.onclick = () => {
+      document.querySelectorAll(".opt").forEach(o=>o.classList.remove("selected"));
+      el.classList.add("selected");
+      state.practiceAnswers[trial.id] = parseInt(el.dataset.val,10);
+      updateNextEnabled();
+    };
+  });
+
+  // Practice answers are intentionally never sent to saveResponse().
+  document.getElementById("nextBtn").onclick = () => {
+    if(!isLast){
+      state.practiceIdx++;
+      render();
+    } else {
+      state.order = [...shuffle(TEST1_TRIALS), ...shuffle(TEST2_TRIALS)];
+      state.test1Count = TEST1_TRIALS.length;
+      state.idx = 0;
+      state.screen = "trial";
+      render();
+    }
   };
 }
 
