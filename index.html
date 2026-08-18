@@ -275,15 +275,13 @@ const CCR_LABELS = [
   {v:0,label:"About the same"}, {v:1,label:"Slightly better"}, {v:2,label:"Better"}, {v:3,label:"Much better"}
 ];
 
-// Practice round shown before Test 1 - always uses a synthesized demo tone
-// (regardless of USE_DEMO_AUDIO) so it works even before real audio is
-// wired up, and its answers are never saved anywhere.
-const PRACTICE_TRIALS = [
-  { id:"practice_acr", type:"acr", condition:"__practice__",
-    audioUrl:"", demo:{noise:0.25, freq:466} },
-  { id:"practice_ccr", type:"ccr", refCondition:"__practice__", testCondition:"__practice__",
-    refAudioUrl:"", testAudioUrl:"", demoRef:{noise:0.05, freq:466}, demoTest:{noise:0.3, freq:466} },
-];
+// Practice items shown right before each real test - always use a
+// synthesized demo tone (regardless of USE_DEMO_AUDIO) so they work even
+// before real audio is wired up, and answers are never saved anywhere.
+const PRACTICE_TEST1 = { id:"practice_acr", type:"acr", condition:"__practice__",
+  audioUrl:"", demo:{noise:0.25, freq:466} };
+const PRACTICE_TEST2 = { id:"practice_ccr", type:"ccr", refCondition:"__practice__", testCondition:"__practice__",
+  refAudioUrl:"", testAudioUrl:"", demoRef:{noise:0.05, freq:466}, demoTest:{noise:0.3, freq:466} };
 
 /* ========================================================================= */
 
@@ -467,11 +465,11 @@ let state = {
   screen: "intro",
   participantId: randId(),
   consentGiven: false,
-  order: [],
+  order: [],       // current phase's trial order (Test 1 or Test 2, never both)
+  phase: null,     // "test1" | "test2"
   idx: 0,
   answers: {},
   attentionFail: false,
-  practiceIdx: 0,
   practiceAnswers: {}
 };
 
@@ -490,13 +488,14 @@ function renderInterstitial(){
     <div class="eyebrow">Test 1 complete</div>
     <h1>Moving on to Test 2</h1>
     <p>In this next test you'll hear two clips per item, A and B, and judge how B compares to A.
-       Test 1 is now finished and cannot be revisited.</p>
+       Test 1 is now finished and cannot be revisited. You'll get one quick practice item first.</p>
     <div class="row end">
-      <button class="btn btn-primary" id="continueBtn">Continue to Test 2 →</button>
+      <button class="btn btn-primary" id="continueBtn">Continue →</button>
     </div>
   </div>`;
   document.getElementById("continueBtn").onclick = () => {
-    state.screen = "trial";
+    state.phase = "test2";
+    state.screen = "practice";
     render();
   };
 }
@@ -534,19 +533,18 @@ function renderIntro(){
   startBtn.onclick = () => {
     const val = document.getElementById("pid").value.trim();
     state.participantId = val || state.participantId;
+    state.phase = "test1";
     state.screen = "practice";
-    state.practiceIdx = 0;
     render();
   };
 }
 
 function renderPractice(){
-  const trial = PRACTICE_TRIALS[state.practiceIdx];
-  const total = PRACTICE_TRIALS.length;
+  const trial = state.phase === "test2" ? PRACTICE_TEST2 : PRACTICE_TEST1;
   const selected = state.practiceAnswers[trial.id];
   const isCCR = trial.type === "ccr";
   const labels = isCCR ? CCR_LABELS : ACR_LABELS;
-  const isLast = state.practiceIdx === total - 1;
+  const startLabel = state.phase === "test2" ? "Start Test 2 →" : "Start Test 1 →";
 
   if(isCCR && trial._firstIsRef === undefined){
     trial._firstIsRef = Math.random() < 0.5;
@@ -554,12 +552,12 @@ function renderPractice(){
 
   app.innerHTML = `
   <div class="progress-wrap">
-    <div class="progress-track"><div class="progress-fill" style="width:${(state.practiceIdx/total*100).toFixed(1)}%;background:var(--warn);"></div></div>
-    <div class="progress-label"><span>PRACTICE · ITEM ${state.practiceIdx+1} / ${total}</span><span>${state.participantId}</span></div>
+    <div class="progress-track"><div class="progress-fill" style="width:50%;background:var(--warn);"></div></div>
+    <div class="progress-label"><span>PRACTICE - BEFORE ${state.phase === "test2" ? "TEST 2" : "TEST 1"}</span><span>${state.participantId}</span></div>
   </div>
   <div class="card">
     <div class="type-badge" style="border-color:var(--warn);color:var(--warn);">Practice · Not scored</div>
-    <div class="attn-flag">This round is just to help you get comfortable with the controls. Nothing here is recorded or counted in the results.</div>
+    <div class="attn-flag">This item is just to help you get comfortable with the controls before ${state.phase === "test2" ? "Test 2" : "Test 1"}. Nothing here is recorded or counted in the results.</div>
     <div class="stage">
       ${isCCR ? `
         <div class="pair-row">
@@ -583,12 +581,10 @@ function renderPractice(){
         </div>`).join("")}
     </div>
     <div class="row end">
-      <button class="btn btn-primary" id="nextBtn" disabled>
-        ${isLast ? "Start Test 1 →" : "Next practice item →"}
-      </button>
+      <button class="btn btn-primary" id="nextBtn" disabled>${startLabel}</button>
     </div>
   </div>
-  <div class="footer-note">Practice round - your answers here are not saved</div>
+  <div class="footer-note">Practice item - your answer here is not saved</div>
   `;
 
   let playedA = false, playedB = false, playedOnce = !!selected;
@@ -658,16 +654,10 @@ function renderPractice(){
 
   // Practice answers are intentionally never sent to saveResponse().
   document.getElementById("nextBtn").onclick = () => {
-    if(!isLast){
-      state.practiceIdx++;
-      render();
-    } else {
-      state.order = [...shuffle(TEST1_TRIALS), ...shuffle(TEST2_TRIALS)];
-      state.test1Count = TEST1_TRIALS.length;
-      state.idx = 0;
-      state.screen = "trial";
-      render();
-    }
+    state.order = shuffle(state.phase === "test2" ? TEST2_TRIALS : TEST1_TRIALS);
+    state.idx = 0;
+    state.screen = "trial";
+    render();
   };
 }
 
@@ -683,17 +673,14 @@ function renderTrial(){
     trial._firstIsRef = Math.random() < 0.5;
   }
 
-  // progress is relative to the CURRENT test (1 or 2), not the global list
-  const test1Count = state.test1Count;
-  const inTest2 = state.idx >= test1Count;
-  const testLabel = inTest2 ? "Test 2" : "Test 1";
-  const localIdx = inTest2 ? (state.idx - test1Count) : state.idx;
-  const localTotal = inTest2 ? (total - test1Count) : test1Count;
+  // state.order only ever holds the CURRENT phase's trials now, so progress
+  // is simply relative to that array - no cross-phase index math needed.
+  const testLabel = state.phase === "test2" ? "Test 2" : "Test 1";
 
   app.innerHTML = `
   <div class="progress-wrap">
-    <div class="progress-track"><div class="progress-fill" style="width:${(localIdx/localTotal*100).toFixed(1)}%"></div></div>
-    <div class="progress-label"><span>${testLabel.toUpperCase()} · ITEM ${localIdx+1} / ${localTotal}</span><span>${state.participantId}</span></div>
+    <div class="progress-track"><div class="progress-fill" style="width:${(state.idx/total*100).toFixed(1)}%"></div></div>
+    <div class="progress-label"><span>${testLabel.toUpperCase()} · ITEM ${state.idx+1} / ${total}</span><span>${state.participantId}</span></div>
   </div>
   <div class="card">
     <div class="type-badge">${isCCR ? "Test 2 · Comparison" : "Test 1 · Quality"}</div>
@@ -833,10 +820,10 @@ function renderTrial(){
     }
 
     if(state.idx < total-1){
-      const nextIdx = state.idx + 1;
-      const crossingIntoTest2 = state.test1Count > 0 && nextIdx === state.test1Count;
-      state.idx = nextIdx;
-      state.screen = crossingIntoTest2 ? "interstitial" : "trial";
+      state.idx++;
+      render(); // stays in "trial" screen, same phase
+    } else if(state.phase === "test1"){
+      state.screen = "interstitial"; // leads into the Test 2 practice item
       render();
     } else {
       state.screen = "done";
