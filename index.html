@@ -162,7 +162,7 @@
 
    TEST_ID: give each separate study run a unique name so results don't mix.
    ========================================================================= */
-const TEST_ID = "listest_2026_demo_0818";
+const TEST_ID = "listest_2026_demo_v4";
 
 // Leave AUDIO_BASE pointing at any public HTTPS static host, OR - the
 // simplest option for GitHub Pages - put the audio files inside this same
@@ -188,7 +188,7 @@ const METHODS = [
 // (see the recommendation notes in the chat reply). List the shared
 // filename stems here - each must exist in every method folder above.
 const UTTERANCE_IDS = ["p234_005_mic1","p234_057_mic1","p234_109_mic1","p234_216_mic1","p262_016_mic1","p262_128_mic1","p262_304_mic1","p262_381_mic1","p376_079_mic1","p376_146_mic1","p376_291_mic1"];
-
+  
 // Toggle which blocks to include. Turning both on roughly doubles session
 // length - see the estimated duration shown on the intro screen.
 const INCLUDE_ACR_BLOCK = true;   // Test 1: absolute quality rating per condition (ground-truth excluded)
@@ -398,21 +398,23 @@ function hasClaudeStorage(){
 async function saveResponse(rec){
   if(hasClaudeStorage()){
     const key = `resp:${TEST_ID}:${rec.participantId}:${rec.trialId}`;
-    try{ await window.storage.set(key, JSON.stringify(rec), true); }
-    catch(e){ console.error("save failed", e); }
-    return;
+    try{
+      const result = await window.storage.set(key, JSON.stringify(rec), true);
+      return !!result;
+    }catch(e){ console.error("save failed", e); return false; }
   }
   if(GAS_WEBAPP_URL){
     try{
-      await fetch(GAS_WEBAPP_URL, {
+      const res = await fetch(GAS_WEBAPP_URL, {
         method: "POST",
         headers: { "Content-Type": "text/plain;charset=utf-8" }, // avoids CORS preflight against Apps Script
         body: JSON.stringify({ action:"save", testId: TEST_ID, record: rec })
       });
-    }catch(e){ console.error("save failed", e); }
-    return;
+      return res.ok;
+    }catch(e){ console.error("save failed", e); return false; }
   }
   console.error("No storage backend configured. Set GAS_WEBAPP_URL for non-Claude deployments (e.g. GitHub Pages).");
+  return false;
 }
 async function loadAllResponses(){
   if(hasClaudeStorage()){
@@ -470,10 +472,20 @@ let state = {
   idx: 0,
   answers: {},
   attentionFail: false,
-  practiceAnswers: {}
+  practiceAnswers: {},
+  submitting: false // guards against double-clicking Next before a save finishes
 };
 
+// Bumped on every screen transition. Async callbacks captured by a given
+// render (e.g. an audio file that finishes decoding late) compare their
+// captured token against the live value and no-op if the page has since
+// moved on - this stops a slow-to-resolve callback from the PREVIOUS trial
+// from reaching into the NEXT trial's DOM (same element IDs are reused
+// across renders) and, say, prematurely enabling its Next button.
+let renderToken = 0;
+
 function render(){
+  renderToken++;
   if(isAdmin){ renderAdmin(); return; }
   if(state.screen === "intro") return renderIntro();
   if(state.screen === "practice") return renderPractice();
@@ -588,9 +600,12 @@ function renderPractice(){
   `;
 
   let playedA = false, playedB = false, playedOnce = !!selected;
+  const myToken = renderToken;
 
   function updateNextEnabled(){
+    if(myToken !== renderToken) return;
     const btn = document.getElementById("nextBtn");
+    if(!btn) return;
     if(isCCR){
       btn.disabled = !(playedA && playedB && state.practiceAnswers[trial.id]!=null);
     } else {
@@ -611,6 +626,7 @@ function renderPractice(){
     btnA.onclick = () => {
       btnA.disabled = true;
       playStimulus(firstUrl, firstDemo, () => {
+        if(myToken !== renderToken) return;
         btnA.disabled = false; btnA.classList.add("played"); playedA = true;
         playCountEl.textContent = "You can replay either clip as many times as you like";
         updateNextEnabled();
@@ -619,6 +635,7 @@ function renderPractice(){
     btnB.onclick = () => {
       btnB.disabled = true;
       playStimulus(secondUrl, secondDemo, () => {
+        if(myToken !== renderToken) return;
         btnB.disabled = false; btnB.classList.add("played"); playedB = true;
         playCountEl.textContent = "You can replay either clip as many times as you like";
         updateNextEnabled();
@@ -633,6 +650,7 @@ function renderPractice(){
       playBtn.disabled = true;
       animateScope(scopeLine, true);
       playStimulus(trial.audioUrl, trial.demo, () => {
+        if(myToken !== renderToken) return;
         playBtn.disabled = false;
         animateScope(scopeLine, false);
         localPlays++;
@@ -654,6 +672,7 @@ function renderPractice(){
 
   // Practice answers are intentionally never sent to saveResponse().
   document.getElementById("nextBtn").onclick = () => {
+    if(myToken !== renderToken) return; // ignore a duplicate/late click after we've already moved on
     state.order = shuffle(state.phase === "test2" ? TEST2_TRIALS : TEST1_TRIALS);
     state.idx = 0;
     state.screen = "trial";
@@ -718,8 +737,12 @@ function renderTrial(){
 
   let playedA = false, playedB = false, playedOnce = !!selected;
 
+  const myToken = renderToken; // freeze the "generation" this render belongs to
+
   function updateNextEnabled(){
+    if(myToken !== renderToken) return; // a newer screen is showing now - ignore
     const btn = document.getElementById("nextBtn");
+    if(!btn) return;
     if(isCCR){
       btn.disabled = !(playedA && playedB && state.answers[trial.id]!=null);
     } else {
@@ -740,6 +763,7 @@ function renderTrial(){
     btnA.onclick = () => {
       btnA.disabled = true;
       playStimulus(firstUrl, firstDemo, () => {
+        if(myToken !== renderToken) return; // stale callback - the page has moved on
         btnA.disabled = false; btnA.classList.add("played"); playedA = true;
         playCountEl.textContent = "You can replay either clip as many times as you like";
         updateNextEnabled();
@@ -748,6 +772,7 @@ function renderTrial(){
     btnB.onclick = () => {
       btnB.disabled = true;
       playStimulus(secondUrl, secondDemo, () => {
+        if(myToken !== renderToken) return;
         btnB.disabled = false; btnB.classList.add("played"); playedB = true;
         playCountEl.textContent = "You can replay either clip as many times as you like";
         updateNextEnabled();
@@ -762,6 +787,7 @@ function renderTrial(){
       playBtn.disabled = true;
       animateScope(scopeLine, true);
       playStimulus(trial.audioUrl, trial.demo, () => {
+        if(myToken !== renderToken) return;
         playBtn.disabled = false;
         animateScope(scopeLine, false);
         localPlays++;
@@ -782,6 +808,14 @@ function renderTrial(){
   });
 
   document.getElementById("nextBtn").onclick = async () => {
+    if(state.submitting) return; // ignore double-clicks / repeated fires while a save is in flight
+    state.submitting = true;
+
+    const nextBtn = document.getElementById("nextBtn");
+    const originalLabel = nextBtn.textContent;
+    nextBtn.disabled = true;
+    nextBtn.textContent = "Saving...";
+
     const rawScore = state.answers[trial.id];
 
     if(trial.attention){
@@ -789,10 +823,11 @@ function renderTrial(){
       state.attentionFail = state.attentionFail || (rawScore !== expected);
     }
 
+    let ok;
     if(isCCR){
       // rawScore = "second clip vs first clip". Normalize to "test vs reference".
       const adjustedScore = trial._firstIsRef ? rawScore : -rawScore;
-      await saveResponse({
+      ok = await saveResponse({
         testId: TEST_ID,
         participantId: state.participantId,
         trialId: trial.id,
@@ -806,7 +841,7 @@ function renderTrial(){
         ts: Date.now()
       });
     } else {
-      await saveResponse({
+      ok = await saveResponse({
         testId: TEST_ID,
         participantId: state.participantId,
         trialId: trial.id,
@@ -818,6 +853,21 @@ function renderTrial(){
         ts: Date.now()
       });
     }
+
+    if(myToken !== renderToken) return; // page already moved on for some other reason
+
+    if(!ok){
+      // Do NOT advance - this is exactly what prevents a sample from being
+      // silently skipped when a save fails (e.g. a flaky connection to the
+      // Google Apps Script backend).
+      state.submitting = false;
+      nextBtn.disabled = false;
+      nextBtn.textContent = originalLabel;
+      alert("Your answer could not be saved (network issue?). Please try clicking Next again.");
+      return;
+    }
+
+    state.submitting = false;
 
     if(state.idx < total-1){
       state.idx++;
