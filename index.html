@@ -188,7 +188,7 @@ const METHODS = [
 // (see the recommendation notes in the chat reply). List the shared
 // filename stems here - each must exist in every method folder above.
 const UTTERANCE_IDS = ["p234_005_mic1","p234_057_mic1","p234_109_mic1","p234_216_mic1","p262_016_mic1","p262_128_mic1","p262_304_mic1","p262_381_mic1","p376_079_mic1","p376_146_mic1","p376_291_mic1"];
-  
+
 // Toggle which blocks to include. Turning both on roughly doubles session
 // length - see the estimated duration shown on the intro screen.
 const INCLUDE_ACR_BLOCK = true;   // Test 1: absolute quality rating per condition (ground-truth excluded)
@@ -298,6 +298,50 @@ function shuffle(arr){
   return a;
 }
 function randId(){ return "P" + Math.random().toString(36).slice(2,7).toUpperCase(); }
+
+// The "method" a trial belongs to, for the no-consecutive-repeats shuffle
+// below. For CCR trials the varying part is testCondition (refCondition is
+// always the same Ground-Truth for every item).
+function conditionKey(t){
+  return t.type === "ccr" ? t.testCondition : t.condition;
+}
+
+// Random order, but avoids placing two trials from the same condition/method
+// back-to-back. Shuffles fully at random, then repairs any adjacent repeats
+// by swapping with a later item; retries a few times and keeps the best
+// attempt, since a single repair pass can occasionally leave one repeat in
+// place (e.g. right at the end of the array).
+function shuffleNoAdjacentRepeats(items, keyFn, maxAttempts=25){
+  let best = null, bestViolations = Infinity;
+
+  for(let attempt = 0; attempt < maxAttempts; attempt++){
+    const arr = shuffle(items);
+    for(let i = 1; i < arr.length; i++){
+      if(keyFn(arr[i]) !== keyFn(arr[i-1])) continue;
+      let swapIdx = -1;
+      for(let j = i+1; j < arr.length; j++){
+        if(keyFn(arr[j]) === keyFn(arr[i-1])) continue; // would still repeat with arr[i-1]
+        // avoid creating a NEW repeat between arr[i-1]'s old neighbor at j-1/j+1
+        const wouldClashAfter = j < arr.length-1 && keyFn(arr[j+1]) === keyFn(arr[i]);
+        if(!wouldClashAfter){ swapIdx = j; break; }
+      }
+      if(swapIdx !== -1){
+        [arr[i], arr[swapIdx]] = [arr[swapIdx], arr[i]];
+      }
+    }
+    let violations = 0;
+    for(let i = 1; i < arr.length; i++){
+      if(keyFn(arr[i]) === keyFn(arr[i-1])) violations++;
+    }
+    if(violations < bestViolations){ bestViolations = violations; best = arr; }
+    if(violations === 0) break;
+  }
+
+  if(bestViolations > 0){
+    console.warn(`shuffleNoAdjacentRepeats: could not fully eliminate consecutive same-condition items (${bestViolations} remaining) - one condition group may be too large relative to the total.`);
+  }
+  return best;
+}
 
 // ---- demo synth audio (placeholder until real audio files are provided) ----
 let actx;
@@ -673,7 +717,8 @@ function renderPractice(){
   // Practice answers are intentionally never sent to saveResponse().
   document.getElementById("nextBtn").onclick = () => {
     if(myToken !== renderToken) return; // ignore a duplicate/late click after we've already moved on
-    state.order = shuffle(state.phase === "test2" ? TEST2_TRIALS : TEST1_TRIALS);
+    const trials = state.phase === "test2" ? TEST2_TRIALS : TEST1_TRIALS;
+    state.order = shuffleNoAdjacentRepeats(trials, conditionKey);
     state.idx = 0;
     state.screen = "trial";
     render();
