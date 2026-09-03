@@ -493,8 +493,12 @@ async function saveResponse(rec){
         headers: { ...supabaseHeaders(), "Content-Type": "application/json", "Prefer": "return=minimal" },
         body: JSON.stringify(toSupabaseRow(rec))
       });
+      if(!res.ok){
+        const bodyText = await res.text().catch(()=> "(could not read response body)");
+        console.error(`Supabase save failed: HTTP ${res.status} ${res.statusText}`, bodyText);
+      }
       return res.ok;
-    }catch(e){ console.error("save failed (supabase)", e); return false; }
+    }catch(e){ console.error("Supabase save failed - network/CORS error (check SUPABASE_URL is correct and reachable):", e); return false; }
   }
   if(GAS_WEBAPP_URL){
     try{
@@ -528,10 +532,14 @@ async function loadAllResponses(){
       const res = await fetch(`${SUPABASE_URL}/rest/v1/responses?testId=eq.${encodeURIComponent(TEST_ID)}&select=*`, {
         headers: supabaseHeaders()
       });
-      if(!res.ok) return [];
+      if(!res.ok){
+        const bodyText = await res.text().catch(()=> "(could not read response body)");
+        console.error(`Supabase load failed: HTTP ${res.status} ${res.statusText}`, bodyText);
+        return [];
+      }
       const rows = await res.json();
       return rows.map(fromSupabaseRow);
-    }catch(e){ console.error("load failed (supabase)", e); return []; }
+    }catch(e){ console.error("Supabase load failed - network/CORS error:", e); return []; }
   }
   if(GAS_WEBAPP_URL){
     try{
