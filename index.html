@@ -162,7 +162,7 @@
 
    TEST_ID: give each separate study run a unique name so results don't mix.
    ========================================================================= */
-const TEST_ID = "listest_2026_demo_v4";
+const TEST_ID = "listest_2026_demo_0903";
 
 // Leave AUDIO_BASE pointing at any public HTTPS static host, OR - the
 // simplest option for GitHub Pages - put the audio files inside this same
@@ -174,7 +174,15 @@ const AUDIO_BASE = "./audio";
 // deployed on GitHub Pages). Paste the Google Apps Script Web App URL here
 // (see the deployment guide) to enable saving/loading results. Leave blank
 // while testing inside Claude - window.storage is used automatically instead.
+//
+// NOTE: script.google.com / Google Sheets are blocked in mainland China.
+// If any participants are there, use SUPABASE_URL/SUPABASE_KEY below
+// instead - Supabase is generally reachable from mainland China without a
+// VPN. If both are filled in, Supabase takes priority.
 const GAS_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbyRGMK3LJuzGs5UxKxxjTvOKK4OH1lKLyyllBr7ONX6oqBlA02Y-xYwiYzbD_16H0NM/exec";
+
+const SUPABASE_URL = "https://mebpxyzdxyqvqripmfpm.supabase.co/rest/v1/";  // e.g. "https://xxxxxxxx.supabase.co" (Project Settings > API)
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1lYnB4eXpkeHlxdnFyaXBtZnBtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MjQxMzMsImV4cCI6MjEwNDAwMDEzM30.Sp0NyG_ZpMPOJSJ4jrttnpDOEIWzkoj_RIJSsgGyJEk";  // the "anon public" key (Project Settings > API)
 
 
 const METHODS = [
@@ -435,10 +443,41 @@ function playStimulus(audioUrl, demo, onEnd){
   audio.play().catch(err => fallbackToWebAudio(err.message || String(err)));
 }
 
-// ---- storage helpers (auto: Claude artifact storage, or GAS backend for self-hosted deployments) ----
+// ---- storage helpers ----
+// Priority: Claude artifact storage > Supabase > Google Apps Script.
+// Supabase is recommended when any participants are in mainland China,
+// since script.google.com / Google Sheets are blocked there but Supabase
+// is generally reachable without a VPN.
 function hasClaudeStorage(){
   return typeof window.storage !== "undefined" && window.storage && typeof window.storage.set === "function";
 }
+function hasSupabase(){
+  return !!(SUPABASE_URL && SUPABASE_KEY);
+}
+
+// rec.order is renamed to trialOrder for Supabase since "order" is a
+// reserved SQL keyword in Postgres.
+function toSupabaseRow(rec){
+  return {
+    testId: rec.testId, participantId: rec.participantId, type: rec.type, trialId: rec.trialId,
+    condition: rec.condition ?? null, refCondition: rec.refCondition ?? null, testCondition: rec.testCondition ?? null,
+    score: rec.score ?? null, rawScore: rec.rawScore ?? null, adjustedScore: rec.adjustedScore ?? null,
+    firstIsRef: rec.firstIsRef ?? null, isAttentionCheck: !!rec.isAttentionCheck,
+    trialOrder: rec.order ?? null, ts: rec.ts
+  };
+}
+function fromSupabaseRow(r){
+  return {
+    testId: r.testId, participantId: r.participantId, type: r.type, trialId: r.trialId,
+    condition: r.condition, refCondition: r.refCondition, testCondition: r.testCondition,
+    score: r.score, rawScore: r.rawScore, adjustedScore: r.adjustedScore,
+    firstIsRef: r.firstIsRef, isAttentionCheck: r.isAttentionCheck, order: r.trialOrder, ts: r.ts
+  };
+}
+function supabaseHeaders(){
+  return { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` };
+}
+
 async function saveResponse(rec){
   if(hasClaudeStorage()){
     const key = `resp:${TEST_ID}:${rec.participantId}:${rec.trialId}`;
@@ -446,6 +485,16 @@ async function saveResponse(rec){
       const result = await window.storage.set(key, JSON.stringify(rec), true);
       return !!result;
     }catch(e){ console.error("save failed", e); return false; }
+  }
+  if(hasSupabase()){
+    try{
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/responses`, {
+        method: "POST",
+        headers: { ...supabaseHeaders(), "Content-Type": "application/json", "Prefer": "return=minimal" },
+        body: JSON.stringify(toSupabaseRow(rec))
+      });
+      return res.ok;
+    }catch(e){ console.error("save failed (supabase)", e); return false; }
   }
   if(GAS_WEBAPP_URL){
     try{
@@ -455,11 +504,12 @@ async function saveResponse(rec){
         body: JSON.stringify({ action:"save", testId: TEST_ID, record: rec })
       });
       return res.ok;
-    }catch(e){ console.error("save failed", e); return false; }
+    }catch(e){ console.error("save failed (gas)", e); return false; }
   }
-  console.error("No storage backend configured. Set GAS_WEBAPP_URL for non-Claude deployments (e.g. GitHub Pages).");
+  console.error("No storage backend configured. Set SUPABASE_URL/SUPABASE_KEY (recommended for mainland China) or GAS_WEBAPP_URL for non-Claude deployments.");
   return false;
 }
+
 async function loadAllResponses(){
   if(hasClaudeStorage()){
     const listRes = await window.storage.list(`resp:${TEST_ID}:`, true);
@@ -473,12 +523,22 @@ async function loadAllResponses(){
     }
     return out;
   }
+  if(hasSupabase()){
+    try{
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/responses?testId=eq.${encodeURIComponent(TEST_ID)}&select=*`, {
+        headers: supabaseHeaders()
+      });
+      if(!res.ok) return [];
+      const rows = await res.json();
+      return rows.map(fromSupabaseRow);
+    }catch(e){ console.error("load failed (supabase)", e); return []; }
+  }
   if(GAS_WEBAPP_URL){
     try{
       const res = await fetch(`${GAS_WEBAPP_URL}?action=list&testId=${encodeURIComponent(TEST_ID)}`);
       const data = await res.json();
       return data.records || [];
-    }catch(e){ console.error("load failed", e); return []; }
+    }catch(e){ console.error("load failed (gas)", e); return []; }
   }
   return [];
 }
@@ -495,6 +555,15 @@ async function clearAllResponses(){
     }
     return;
   }
+  if(hasSupabase()){
+    try{
+      await fetch(`${SUPABASE_URL}/rest/v1/responses?testId=eq.${encodeURIComponent(TEST_ID)}`, {
+        method: "DELETE",
+        headers: supabaseHeaders()
+      });
+    }catch(e){ console.error("clear failed (supabase)", e); }
+    return;
+  }
   if(GAS_WEBAPP_URL){
     try{
       await fetch(GAS_WEBAPP_URL, {
@@ -502,7 +571,7 @@ async function clearAllResponses(){
         headers: { "Content-Type": "text/plain;charset=utf-8" },
         body: JSON.stringify({ action:"clear", testId: TEST_ID })
       });
-    }catch(e){ console.error("clear failed", e); }
+    }catch(e){ console.error("clear failed (gas)", e); }
   }
 }
 
